@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>학교 근처 병원 & 약국 지도</title>
+  <!-- 카카오맵 API 불러오기 (services 라이브러리 포함) -->
+  <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey=YOUR_APP_KEY&libraries=services"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      font-family: 'Malgun Gothic', dotum, sans-serif;
+    }
+    #container {
+      display: flex;
+      width: 100%;
+      height: 100vh;
+    }
+    /* 왼쪽 사이드바 스타일 */
+    #sidebar {
+      width: 350px;
+      height: 100%;
+      background: #f8f9fa;
+      border-right: 1px solid #dee2e6;
+      display: flex;
+      flex-direction: column;
+      z-index: 10;
+    }
+    /* 탭 버튼 영역 */
+    .tab-group {
+      display: flex;
+      background: #e9ecef;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 15px 10px;
+      border: none;
+      background: transparent;
+      font-size: 14px;
+      font-weight: bold;
+      color: #495057;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+    .tab-btn.active {
+      background: #ffffff;
+      color: #e03131;
+      border-bottom: 3px solid #e03131;
+    }
+    .tab-btn#tab-pharmacy.active {
+      color: #2f9e44;
+      border-bottom-color: #2f9e44;
+    }
+    /* 검색 결과 리스트 영역 */
+    #place-list {
+      flex: 1;
+      overflow-y: auto;
+      list-style: none;
+      padding: 10px;
+    }
+    .place-item {
+      padding: 12px;
+      margin-bottom: 8px;
+      background: #ffffff;
+      border: 1px solid #e9ecef;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .place-item:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+      border-color: #adb5bd;
+    }
+    .place-title {
+      font-size: 15px;
+      font-weight: bold;
+      color: #212529;
+      margin-bottom: 4px;
+    }
+    .place-address {
+      font-size: 13px;
+      color: #868e96;
+    }
+    .place-category {
+      font-size: 11px;
+      color: #adb5bd;
+      margin-top: 4px;
+    }
+    /* 지도 영역 */
+    #map {
+      flex: 1;
+      height: 100%;
+    }
+    
+    /* CSS로 그리는 custom marker 스타일 (이미지 불필요) */
+    .custom-pin-marker {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 3px 6px rgba(0,0,0,0.3);
+      cursor: pointer;
+    }
+    /* 병원: 빨간색 핀 */
+    .custom-pin-marker.hospital {
+      background: #e03131;
+    }
+    /* 약국: 초록색 핀 */
+    .custom-pin-marker.pharmacy {
+      background: #2f9e44;
+    }
+    /* 핀 내부 십자가 모양 (회전 보정) */
+    .custom-pin-marker .cross-icon {
+      transform: rotate(45deg);
+      font-size: 18px;
+      font-weight: bold;
+      color: #ffffff;
+      line-height: 1;
+      user-select: none;
+    }
+    /* 내 위치 마커 전용 스타일 */
+    .my-location-pin {
+      width: 20px;
+      height: 20px;
+      background: #1c7ed6;
+      border: 3px solid #ffffff;
+      border-radius: 50%;
+      box-shadow: 0 0 8px rgba(28, 126, 214, 0.8);
+    }
+
+    /* 인포윈도우 스타일 */
+    .info-window {
+      padding: 10px;
+      font-size: 12px;
+      color: #333;
+      min-width: 160px;
+      line-height: 1.4;
+    }
+    .info-window strong {
+      display: block;
+      font-size: 13px;
+      color: #000;
+      margin-bottom: 3px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="container">
+    <!-- 왼쪽 사이드바 -->
+    <div id="sidebar">
+      <div class="tab-group">
+        <button class="tab-btn active" id="tab-hospital" onclick="changeCategory('HP8')">학교 근처 병원</button>
+        <button class="tab-btn" id="tab-pharmacy" onclick="changeCategory('PM9')">병원 근처 약국</button>
+      </div>
+      <ul id="place-list"></ul>
+    </div>
+
+    <!-- 지도 표시 영역 -->
+    <div id="map"></div>
+  </div>
+
+  <script>
+    // 기본 중심 좌표
+    let currentPosition = new kakao.maps.LatLng(37.566826, 126.978656);
+    let map;
+    let placeSearchService;
+    let customOverlays = []; // CSS 오버레이 마커들을 담는 배열
+    let activeInfoWindow = null;
+    let currentCategory = 'HP8'; // 기본값: 병원(HP8)
+
+    // 페이지 로드 시 초기화
+    window.onload = function() {
+      const mapContainer = document.getElementById('map');
+      const mapOptions = {
+        center: currentPosition,
+        level: 4
+      };
+
+      // 지도 생성
+      map = new kakao.maps.Map(mapContainer, mapOptions);
+
+      // 카카오 장소 검색 객체 생성
+      placeSearchService = new kakao.maps.services.Places();
+
+      // 현재 위치 추출 (기능 1: 현재 위치 표시)
+      getUserLocation();
+    };
+
+    // 사용자 위치 추출 및 내 위치 오버레이 표시
+    function getUserLocation() {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          function(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            currentPosition = new kakao.maps.LatLng(lat, lng);
+
+            map.setCenter(currentPosition);
+
+            // 내 위치 마커 (CSS 원형 핀)
+            const myLocationContent = document.createElement('div');
+            myLocationContent.className = 'my-location-pin';
+            myLocationContent.title = '내 위치';
+
+            const myLocationOverlay = new kakao.maps.CustomOverlay({
+              position: currentPosition,
+              content: myLocationContent,
+              yAnchor: 0.5,
+              xAnchor: 0.5
+            });
+            myLocationOverlay.setMap(map);
+
+            // 내 위치 팝업 이벤트
+            const myInfoWindow = new kakao.maps.InfoWindow({
+              content: '<div class="info-window"><strong>📍 현재 위치</strong></div>'
+            });
+
+            myLocationContent.onclick = function() {
+              if (activeInfoWindow) activeInfoWindow.close();
+              myInfoWindow.open(map, new kakao.maps.Marker({ position: currentPosition }));
+              activeInfoWindow = myInfoWindow;
+            };
+
+            // 내 위치 기준 초기 검색 수행
+            searchCategoryPlaces(currentCategory);
+          },
+          function(error) {
+            console.warn('Geolocation 불러오기 실패, 기본 위치 사용:', error.message);
+            searchCategoryPlaces(currentCategory);
+          }
+        );
+      } else {
+        alert('이 브라우저는 GeoLocation을 지원하지 않습니다.');
+        searchCategoryPlaces(currentCategory);
+      }
+    }
+
+    // 탭 클릭 시 카테고리 변경 처리
+    function changeCategory(categoryCode) {
+      if (currentCategory === categoryCode) return;
+
+      currentCategory = categoryCode;
+
+      // 탭 버튼 스타일 전환
+      document.getElementById('tab-hospital').classList.toggle('active', categoryCode === 'HP8');
+      document.getElementById('tab-pharmacy').classList.toggle('active', categoryCode === 'PM9');
+
+      // 카테고리 장소 검색 실행
+      searchCategoryPlaces(categoryCode);
+    }
+
+    // 카테고리 검색 서비스 실행
+    function searchCategoryPlaces(categoryCode) {
+      // 1. 기존 데이터 초기화
+      clearPreviousData();
+
+      // 2. 카카오 카테고리 검색
+      placeSearchService.categorySearch(categoryCode, searchPlacesCallback, {
+        location: currentPosition,
+        radius: 2000,
+        sort: kakao.maps.services.SortBy.DISTANCE
+      });
+    }
+
+    // 검색 결과 콜백 함수
+    function searchPlacesCallback(data, status, pagination) {
+      if (status === kakao.maps.services.Status.OK) {
+        displayPlacesAndMarkers(data);
+      } else if (status === kakao.maps.services.Status.ZERO_RESULT) {
+        alert('주변에 검색된 장소가 없습니다.');
+      } else if (status === kakao.maps.services.Status.ERROR) {
+        alert('장소 검색 중 오류가 발생했습니다.');
+      }
+    }
+
+    // 결과 목록 및 마커 출력
+    function displayPlacesAndMarkers(places) {
+      const listContainer = document.getElementById('place-list');
+      const bounds = new kakao.maps.LatLngBounds();
+
+      bounds.extend(currentPosition);
+
+      places.forEach(function(place) {
+        const placePosition = new kakao.maps.LatLng(place.y, place.x);
+
+        // 1. CSS 커스텀 오버레이 마커 생성
+        const overlay = createCustomMarker(placePosition, place);
+        customOverlays.push(overlay);
+
+        // 2. 리스트 생성
+        const listItem = createListItem(place, overlay, placePosition);
+        listContainer.appendChild(listItem);
+
+        bounds.extend(placePosition);
+      });
+
+      map.setBounds(bounds);
+    }
+
+    // Pure CSS로 병원(빨간 십자가), 약국(초록 십자가) 커스텀 마커 생성
+    function createCustomMarker(position, place) {
+      const markerElement = document.createElement('div');
+      
+      // 카테고리에 맞춰 클래스 및 십자가(+) 부과
+      if (currentCategory === 'HP8') {
+        markerElement.className = 'custom-pin-marker hospital';
+      } else {
+        markerElement.className = 'custom-pin-marker pharmacy';
+      }
+
+      markerElement.innerHTML = '<span class="cross-icon">✚</span>';
+
+      // 커스텀 오버레이 생성
+      const customOverlay = new kakao.maps.CustomOverlay({
+        position: position,
+        content: markerElement,
+        xAnchor: 0.5,
+        yAnchor: 1.0
+      });
+
+      customOverlay.setMap(map);
+
+      // 상세 팝업 준비
+      const address = place.road_address_name ? place.road_address_name : place.address_name;
+      const content = `
+        <div class="info-window">
+          <strong>${place.place_name}</strong>
+          <span>${address}</span>
+        </div>
+      `;
+
+      const infoWindow = new kakao.maps.InfoWindow({
+        content: content,
+        removable: true
+      });
+
+      // 마커 클릭 시 팝업 열기
+      markerElement.onclick = function() {
+        if (activeInfoWindow) activeInfoWindow.close();
+        infoWindow.open(map, new kakao.maps.Marker({ position: position }));
+        activeInfoWindow = infoWindow;
+      };
+
+      // 리스트 클릭 이벤트 처리를 위해 인포윈도우 객체를 오버레이에 보관
+      customOverlay.infoWindow = infoWindow;
+
+      return customOverlay;
+    }
+
+    // 왼쪽 사이드바 리스트 아이템 생성
+    function createListItem(place, overlay, position) {
+      const li = document.createElement('li');
+      li.className = 'place-item';
+
+      const address = place.road_address_name ? place.road_address_name : place.address_name;
+
+      li.innerHTML = `
+        <div class="place-title">${place.place_name}</div>
+        <div class="place-address">${address}</div>
+        <div class="place-category">${place.category_name}</div>
+      `;
+
+      li.onclick = function() {
+        map.panTo(position);
+        if (activeInfoWindow) activeInfoWindow.close();
+        overlay.infoWindow.open(map, new kakao.maps.Marker({ position: position }));
+        activeInfoWindow = overlay.infoWindow;
+      };
+
+      return li;
+    }
+
+    // 기존 데이터 지우기
+    function clearPreviousData() {
+      // 1. 기존 CSS 오버레이 마커 제거
+      customOverlays.forEach(function(overlay) {
+        overlay.setMap(null);
+      });
+      customOverlays = [];
+
+      // 2. 열린 인포윈도우 닫기
+      if (activeInfoWindow) {
+        activeInfoWindow.close();
+        activeInfoWindow = null;
+      }
+
+      // 3. 리스트 비우기
+      const listContainer = document.getElementById('place-list');
+      listContainer.innerHTML = '';
+    }
+  </script>
+</body>
+</html>
